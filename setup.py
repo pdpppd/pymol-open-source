@@ -651,7 +651,6 @@ if not options.glut:
 if options.testing:
     pymol_src_dirs += ["layerCTest"]
     def_macros += [("_PYMOL_CTEST", None)]
-    libs += ["Catch2", "Catch2Main"]
 
 if options.openvr:
     def_macros += [("_PYMOL_OPENVR", None)]
@@ -832,6 +831,9 @@ champ_inc_dirs.append(sysconfig.get_paths()["include"])
 champ_inc_dirs.append(sysconfig.get_paths()["platinclude"])
 
 champ_libs = []
+
+if options.testing:
+    libs += ["Catch2", "Catch2Main"]
 
 if WIN:
     if not is_mingw:
