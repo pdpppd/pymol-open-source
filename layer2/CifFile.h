@@ -380,6 +380,20 @@ public:
   const cif_detail::cif_str_data* get_saveframe(const char* code) const;
 };
 
+namespace cif
+{
+enum class DataTypes {
+  Int8 = 1,
+  Int16 = 2,
+  Int32 = 3,
+  UInt8 = 4,
+  UInt16 = 5,
+  UInt32 = 6,
+  Float32 = 32,
+  Float64 = 33,
+};
+} // namespace cif
+
 } // namespace pymol
 
 /**

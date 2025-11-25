@@ -10,6 +10,7 @@
 #include <cstdarg>
 #include <clocale>
 #include <memory>
+#include <numeric>
 
 #ifndef _PYMOL_NO_MSGPACKC
 #include <mmtf.hpp>
@@ -32,6 +33,7 @@
 #include "Lex.h"
 #include "P.h"
 #include "PConv.h"
+#include "CifFile.h"
 #include "CifDataValueFormatter.h"
 #include "MaeExportHelpers.h"
 #include "Feedback.h"
@@ -1487,8 +1489,8 @@ class MoleculeExporterMMTF : public MoleculeExporter {
   const AtomInfoType * m_last_ai = nullptr;
   ElemCanonicalizer m_elemGetter;
 
-  std::vector<int32_t> colorList;
-  std::vector<int32_t> repsList;
+  std::vector<std::int32_t> colorList;
+  std::vector<std::int32_t> repsList;
 
 public:
   int getMultiDefault() const override {
@@ -1605,6 +1607,314 @@ public:
 };
 #endif
 
+// ---------------------------------------------------------------------------------- //
+
+/**
+ * Binary CIF (BCIF) exporter using msgpack encoding
+ */
+class MoleculeExporterBCIF : public MoleculeExporter {
+
+  std::string m_datablock_header;
+
+  // Binary data storage (must persist for msgpack zone)
+  std::vector<std::vector<std::uint8_t>> m_binary_buffers;
+  std::vector<std::string> m_string_buffers;
+
+  // Atom data collection vectors
+  std::vector<std::int32_t> m_atom_ids;
+  std::vector<std::string> m_elements;
+  std::vector<std::string> m_atom_names;
+  std::vector<std::string> m_alt_ids;
+  std::vector<std::string> m_residue_names;
+  std::vector<std::string> m_chain_ids;
+  std::vector<std::string> m_entity_ids;
+  std::vector<std::int32_t> m_residue_numbers;
+  std::vector<std::string> m_ins_codes;
+  std::vector<float> m_x_coords;
+  std::vector<float> m_y_coords;
+  std::vector<float> m_z_coords;
+  std::vector<float> m_occupancies;
+  std::vector<float> m_b_factors;
+  std::vector<std::int32_t> m_formal_charges;
+  std::vector<std::string> m_auth_chain_ids;
+  std::vector<std::int32_t> m_model_nums;
+  std::vector<std::string> m_group_pdb;
+
+  CifDataValueFormatter cifrepr;
+
+  // Helper to encode typed array as ByteArray
+  template<typename T>
+  std::vector<std::uint8_t> encodeByteArray(const std::vector<T>& data) {
+    static_assert(std::is_trivially_copyable<T>(), "Type not memcpy-able.");
+    std::vector<std::uint8_t> bytes(data.size() * sizeof(T));
+    std::memcpy(bytes.data(), data.data(), bytes.size());
+    return bytes;
+  }
+
+  // Get DataType enum for a given C++ type
+  template<typename T>
+  pymol::cif::DataTypes getDataType() const noexcept;
+
+  // Add a column with ByteArray encoding
+  template <typename T>
+  msgpack::object encodeColumn(
+      const std::string& name, const std::vector<T>& data, msgpack::zone& zone)
+  {
+    std::unordered_map<std::string, msgpack::object> column;
+    m_string_buffers.push_back(name);
+    column["name"] = msgpack::object(m_string_buffers.back(), zone);
+
+    std::unordered_map<std::string, msgpack::object> columnData;
+    m_binary_buffers.push_back(encodeByteArray(data));
+    columnData["data"] = msgpack::object(m_binary_buffers.back(), zone);
+
+    // Create encoding array with single ByteArray encoder
+    std::vector<std::unordered_map<std::string, msgpack::object>> encodingArray;
+    std::unordered_map<std::string, msgpack::object> encoding;
+    m_string_buffers.push_back(std::string("ByteArray"));
+    encoding["kind"] = msgpack::object(m_string_buffers.back(), zone);
+    encoding["type"] = msgpack::object(static_cast<int>(getDataType<T>()), zone);
+    encodingArray.push_back(encoding);
+
+    columnData["encoding"] = msgpack::object(encodingArray, zone);
+    column["data"] = msgpack::object(columnData, zone);
+
+    return msgpack::object(column, zone);
+  }
+
+  msgpack::object encodeStringColumn(const std::string& name,
+      const std::vector<std::string>& data, msgpack::zone& zone)
+  {
+    std::unordered_map<std::string, msgpack::object> column;
+    m_string_buffers.push_back(name);
+    column["name"] = msgpack::object(m_string_buffers.back(), zone);
+
+    std::unordered_map<std::string, msgpack::object> columnData;
+
+    // Convert strings to concatenated string + offsets
+    std::string concatenated;
+    std::vector<std::int32_t> offsets;
+    offsets.push_back(0);
+
+    for (const auto& str : data) {
+      concatenated += str;
+      offsets.push_back(concatenated.size());
+    }
+
+    // Create StringArray encoding
+    std::vector<std::unordered_map<std::string, msgpack::object>> encodingArray;
+    std::unordered_map<std::string, msgpack::object> stringArrayEncoding;
+    m_string_buffers.push_back(std::string("StringArray"));
+    stringArrayEncoding["kind"] = msgpack::object(m_string_buffers.back(), zone);
+    m_string_buffers.push_back(concatenated);
+    stringArrayEncoding["stringData"] = msgpack::object(m_string_buffers.back(), zone);
+
+    // Offsets encoding (ByteArray of Int32)
+    m_binary_buffers.push_back(encodeByteArray(offsets));
+    stringArrayEncoding["offsets"] = msgpack::object(m_binary_buffers.back(), zone);
+
+    std::vector<std::unordered_map<std::string, msgpack::object>> offsetEncodingArray;
+    std::unordered_map<std::string, msgpack::object> offsetEncoding;
+    m_string_buffers.push_back(std::string("ByteArray"));
+    offsetEncoding["kind"] = msgpack::object(m_string_buffers.back(), zone);
+    offsetEncoding["type"] = msgpack::object(static_cast<int>(pymol::cif::DataTypes::Int32), zone);
+    offsetEncodingArray.push_back(offsetEncoding);
+    stringArrayEncoding["offsetEncoding"] = msgpack::object(offsetEncodingArray, zone);
+
+    // Create indices (all sequential: 0, 1, 2, ...)
+    std::vector<std::int32_t> indices(data.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    m_binary_buffers.push_back(encodeByteArray(indices));
+
+    std::vector<std::unordered_map<std::string, msgpack::object>> dataEncodingArray;
+    std::unordered_map<std::string, msgpack::object> dataEncoding;
+    m_string_buffers.push_back(std::string("ByteArray"));
+    dataEncoding["kind"] = msgpack::object(m_string_buffers.back(), zone);
+    dataEncoding["type"] = msgpack::object(static_cast<int>(pymol::cif::DataTypes::Int32), zone);
+    dataEncodingArray.push_back(dataEncoding);
+    stringArrayEncoding["dataEncoding"] = msgpack::object(dataEncodingArray, zone);
+
+    encodingArray.push_back(stringArrayEncoding);
+
+    // The actual data field for StringArray is the indices
+    columnData["data"] = msgpack::object(m_binary_buffers.back(), zone);
+    columnData["encoding"] = msgpack::object(encodingArray, zone);
+    column["data"] = msgpack::object(columnData, zone);
+
+    return msgpack::object(column, zone);
+  }
+
+public:
+  void init(PyMOLGlobals* G_) override
+  {
+    MoleculeExporter::init(G_);
+    cifrepr.m_buf.resize(10);
+  }
+
+  int getMultiDefault() const override { return cMolExportByObject; }
+
+  void beginMolecule() override
+  {
+    MoleculeExporter::beginMolecule();
+
+    // Set datablock header
+    switch (m_multi) {
+    case cMolExportByObject:
+      m_datablock_header = m_iter.obj->Name;
+      break;
+    case cMolExportByCoordSet:
+      m_datablock_header = getTitleOrName();
+      break;
+    default:
+      m_datablock_header = "pymol";
+      break;
+    }
+
+    // Clear all vectors
+    m_binary_buffers.clear();
+    m_string_buffers.clear();
+    m_atom_ids.clear();
+    m_elements.clear();
+    m_atom_names.clear();
+    m_alt_ids.clear();
+    m_residue_names.clear();
+    m_chain_ids.clear();
+    m_entity_ids.clear();
+    m_residue_numbers.clear();
+    m_ins_codes.clear();
+    m_x_coords.clear();
+    m_y_coords.clear();
+    m_z_coords.clear();
+    m_occupancies.clear();
+    m_b_factors.clear();
+    m_formal_charges.clear();
+    m_auth_chain_ids.clear();
+    m_model_nums.clear();
+    m_group_pdb.clear();
+  }
+
+  void writeAtom() override
+  {
+    const AtomInfoType* ai = m_iter.getAtomInfo();
+
+    m_atom_ids.push_back(getTmpID());
+    m_elements.push_back(ai->elem);
+    m_atom_names.push_back(ai->name ? LexStr(G, ai->name) : "");
+    m_alt_ids.push_back(ai->alt[0] ? std::string(1, ai->alt[0]) : ".");
+    m_residue_names.push_back(ai->resn ? LexStr(G, ai->resn) : "");
+    m_chain_ids.push_back(ai->segi ? LexStr(G, ai->segi) : ".");
+    m_entity_ids.push_back(ai->custom ? LexStr(G, ai->custom) : ".");
+    m_residue_numbers.push_back(ai->resv);
+    m_ins_codes.push_back(ai->inscode ? std::string(1, ai->inscode) : "?");
+    m_x_coords.push_back(m_coord[0]);
+    m_y_coords.push_back(m_coord[1]);
+    m_z_coords.push_back(m_coord[2]);
+    m_occupancies.push_back(ai->q);
+    m_b_factors.push_back(ai->b);
+    m_formal_charges.push_back(ai->formalCharge);
+    m_auth_chain_ids.push_back(ai->chain ? LexStr(G, ai->chain) : ".");
+    m_model_nums.push_back(m_iter.state + 1);
+    m_group_pdb.push_back(ai->hetatm ? "HETATM" : "ATOM");
+  }
+
+  void writeBonds() override { packBCIF(); }
+
+  void packBCIF()
+  {
+    msgpack::zone _zone;
+
+    // Handle empty selection
+    if (m_atom_ids.empty()) {
+      std::unordered_map<std::string, msgpack::object> bcif_root;
+      std::vector<msgpack::object> dataBlocks_vec;
+      bcif_root["dataBlocks"] = msgpack::object(dataBlocks_vec, _zone);
+
+      std::stringstream stream;
+      msgpack::pack(stream, bcif_root);
+      auto buffer = stream.str();
+      auto bufferSize = buffer.size();
+      m_buffer.resize(bufferSize);
+      std::memcpy(m_buffer.data(), buffer.data(), bufferSize);
+      m_offset = bufferSize;
+      return;
+    }
+
+    // Create atom_site category
+    // clang-format off
+    std::vector<msgpack::object> columns;
+    columns.push_back(encodeStringColumn("group_pdb", m_group_pdb, _zone));
+    columns.push_back(encodeColumn("id", m_atom_ids, _zone));
+    columns.push_back(encodeStringColumn("type_symbol", m_elements, _zone));
+    columns.push_back(encodeStringColumn("label_atom_id", m_atom_names, _zone));
+    columns.push_back(encodeStringColumn("label_alt_id", m_alt_ids, _zone));
+    columns.push_back(encodeStringColumn("label_comp_id", m_residue_names, _zone));
+    columns.push_back(encodeStringColumn("label_asym_id", m_chain_ids, _zone));
+    columns.push_back(encodeStringColumn("label_entity_id", m_entity_ids, _zone));
+    columns.push_back(encodeColumn("label_seq_id", m_residue_numbers, _zone));
+    columns.push_back(encodeStringColumn("pdbx_pdb_ins_code", m_ins_codes, _zone));
+    columns.push_back(encodeColumn("cartn_x", m_x_coords, _zone));
+    columns.push_back(encodeColumn("cartn_y", m_y_coords, _zone));
+    columns.push_back(encodeColumn("cartn_z", m_z_coords, _zone));
+    columns.push_back(encodeColumn("occupancy", m_occupancies, _zone));
+    columns.push_back(encodeColumn("b_iso_or_equiv", m_b_factors, _zone));
+    columns.push_back(encodeColumn("pdbx_formal_charge", m_formal_charges, _zone));
+    columns.push_back(encodeStringColumn("auth_asym_id", m_auth_chain_ids, _zone));
+    columns.push_back(encodeColumn("pdbx_pdb_model_num", m_model_nums, _zone));
+    // clang-format on
+
+    std::unordered_map<std::string, msgpack::object> atom_site_category;
+    m_string_buffers.push_back(std::string("_atom_site"));
+    atom_site_category["name"] =
+        msgpack::object(m_string_buffers.back(), _zone);
+    atom_site_category["columns"] = msgpack::object(columns, _zone);
+
+    // Create datablock
+    std::vector<msgpack::object> categories;
+    categories.push_back(msgpack::object(atom_site_category, _zone));
+
+    std::unordered_map<std::string, msgpack::object> datablock;
+    m_string_buffers.push_back(m_datablock_header);
+    datablock["header"] = msgpack::object(m_string_buffers.back(), _zone);
+    datablock["categories"] = msgpack::object(categories, _zone);
+
+    // Create BCIF root structure
+    std::vector<msgpack::object> dataBlocks_vec;
+    dataBlocks_vec.push_back(msgpack::object(datablock, _zone));
+
+    std::unordered_map<std::string, msgpack::object> bcif_root;
+    bcif_root["dataBlocks"] = msgpack::object(dataBlocks_vec, _zone);
+
+    // Pack to buffer
+    std::stringstream stream;
+    msgpack::pack(stream, bcif_root);
+    auto buffer = stream.str();
+    auto bufferSize = buffer.size();
+    m_buffer.resize(bufferSize);
+    std::memcpy(m_buffer.data(), buffer.data(), bufferSize);
+    m_offset = bufferSize;
+  }
+};
+
+template <>
+pymol::cif::DataTypes
+MoleculeExporterBCIF::getDataType<std::int32_t>() const noexcept
+{
+  return pymol::cif::DataTypes::Int32;
+}
+
+template <>
+pymol::cif::DataTypes MoleculeExporterBCIF::getDataType<float>() const noexcept
+{
+  return pymol::cif::DataTypes::Float32;
+}
+
+template <>
+pymol::cif::DataTypes MoleculeExporterBCIF::getDataType<double>() const noexcept
+{
+  return pymol::cif::DataTypes::Float64;
+}
+
+
 /*========================================================================*/
 
 /**
@@ -1672,6 +1982,15 @@ pymol::vla<char> MoleculeExporterGetStr(PyMOLGlobals * G,
 #else
     PRINTFB(G, FB_ObjectMolecule, FB_Errors)
       " Error: This build has no fast MMTF support.\n" ENDFB(G);
+    return {};
+#endif
+  } else if (strcmp(format, "bcif") == 0) {
+#ifndef _PYMOL_NO_MSGPACKC
+    exporter.reset(new MoleculeExporterBCIF);
+#else
+    PRINTFB(G, FB_ObjectMolecule, FB_Errors)
+      " Error: This build has no BinaryCIF support.\n"
+      " Please install/enable msgpack-c.\n" ENDFB(G);
     return {};
 #endif
   } else {

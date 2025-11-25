@@ -27,6 +27,8 @@
 #include <msgpack.hpp>
 #endif
 
+using namespace pymol::cif;
+
 namespace pymol {
 namespace _cif_detail {
 
@@ -484,17 +486,6 @@ bool cif_file::parse(char*&& p) {
 
 
 #if !defined(_PYMOL_NO_MSGPACKC)
-enum class DataTypes
-{
-  Int8 = 1,
-  Int16 = 2,
-  Int32 = 3,
-  UInt8 = 4,
-  UInt16 = 5,
-  UInt32 = 6,
-  Float32 = 32,
-  Float64 = 33,
-};
 
 template <typename T>
 void decodeAndPushBack(const std::vector<unsigned char>& bytes, std::size_t& i,
