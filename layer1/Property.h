@@ -106,6 +106,8 @@ pymol::Result<std::string> PropertyGetAsString(PyMOLGlobals* G, int prop_id,
     std::string_view prop_name, PropertyFmtOptions fmt = {});
 PropertyUniqueEntry* PropertyFindPropertyUniqueEntry(
     PyMOLGlobals* G, int prop_id, int propname_id);
+PropertyUniqueEntry* PropertyFindPropertyUniqueEntry(
+    PyMOLGlobals* G, int prop_id, const char* propname);
 
 // -------------------------------------------------------------
 // templated functions to handle any type with a "prop_id" field

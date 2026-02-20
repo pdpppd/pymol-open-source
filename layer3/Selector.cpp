@@ -8568,6 +8568,27 @@ static int SelectorSelect2(PyMOLGlobals * G, EvalElem * base, int state)
 }
 
 /*========================================================================*/
+/**
+ * Find the prop_id that holds the named property, checking the atom first
+ * and falling back to the first matching CoordSet in [s0, sN).
+ */
+static int FindPropWithFallback(PyMOLGlobals* G, ObjectMolecule* obj,
+    AtomInfoType* at, const char* propname, int s0, int sN)
+{
+  int pid = at->prop_id;
+  if (!pid || !PropertyFindPropertyUniqueEntry(G, pid, propname)) {
+    for (int s = s0; s < sN; s++) {
+      if (s < obj->NCSet && obj->CSet[s] && obj->CSet[s]->prop_id &&
+          PropertyFindPropertyUniqueEntry(
+              G, obj->CSet[s]->prop_id, propname)) {
+        return obj->CSet[s]->prop_id;
+      }
+    }
+    return 0;
+  }
+  return pid;
+}
+
 static pymol::Result<> SelectorSelect3(
     PyMOLGlobals* G, EvalElem* base, int state)
 {
@@ -8583,6 +8604,15 @@ static pymol::Result<> SelectorSelect3(
   base->sele_err_chk_ptr(G);
   switch (base->code) {
   case SELE_PROP:
+    {
+      // Resolve state range for CoordSet property fallback
+      int s0 = 0, sN = I->NCSet;
+      if (state != cStateAll) {
+        s0 = (state < cStateAll) ? SceneGetState(G) : state;
+        sN = s0 + 1;
+      }
+      const char* propname = base[1].text();
+
     oper = WordKey(G, AtOper, base[2].text(), 4, 0, &exact);
     switch (oper) {
     case SCMP_GTHN:
@@ -8592,9 +8622,11 @@ static pymol::Result<> SelectorSelect3(
         return pymol::make_error("Invalid Number: ", base[3].text());
       }
       for(a = cNDummyAtoms; a < I->Table.size(); a++) {
-        at1 = I->Obj[I->Table[a].model]->AtomInfo + I->Table[a].atom;
-        if(at1->prop_id) {
-          fval = PropertyGetAsFloat(G, at1->prop_id, base[1].text());
+        auto obj = I->Obj[I->Table[a].model];
+        at1 = obj->AtomInfo + I->Table[a].atom;
+        int pid = FindPropWithFallback(G, obj, at1, propname, s0, sN);
+        if (pid) {
+          fval = PropertyGetAsFloat(G, pid, propname);
           base[0].sele[a] = fcmp(fval, comp1, oper);
         }
       }
@@ -8610,9 +8642,11 @@ static pymol::Result<> SelectorSelect3(
           return pymol::Error();
         }
         for(a = cNDummyAtoms; a < I->Table.size(); a++) {
-          at1 = I->Obj[I->Table[a].model]->AtomInfo + I->Table[a].atom;
-          if(at1->prop_id) {
-            auto sval = PropertyGetAsString(G, at1->prop_id, base[1].text(), buffer);
+          auto obj = I->Obj[I->Table[a].model];
+          at1 = obj->AtomInfo + I->Table[a].atom;
+          int pid = FindPropWithFallback(G, obj, at1, propname, s0, sN);
+          if (pid) {
+            auto sval = PropertyGetAsString(G, pid, propname, buffer);
             base[0].sele[a] = sval && WordMatcherMatchAlpha(matcher, sval);
           }
         }
@@ -8622,6 +8656,7 @@ static pymol::Result<> SelectorSelect3(
     default:
       return pymol::make_error("Invalid Operator: ", base[2].text());
     }
+    } // SELE_PROP scope
     break;
   default:
     assert(false);

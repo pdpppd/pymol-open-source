@@ -31,8 +31,7 @@ Z* -------------------------------------------------------------------
 #include "Util.h"
 #include "strcasecmp.h"
 
-static PropertyUniqueEntry* PropertyFindPropertyUniqueEntry(
-    PyMOLGlobals* G, int prop_id, const char* propname);
+
 
 /**
  * Delete all properties for unique_id (e.g. AtomInfoType::prop_id)
@@ -643,7 +642,7 @@ PropertyUniqueEntry* PropertyFindPropertyUniqueEntry(
 /**
  * Get property entry handle
  */
-static PropertyUniqueEntry* PropertyFindPropertyUniqueEntry(
+PropertyUniqueEntry* PropertyFindPropertyUniqueEntry(
     PyMOLGlobals* G, int prop_id, const char* propname)
 {
   CPropertyUnique* I = G->PropertyUnique;
