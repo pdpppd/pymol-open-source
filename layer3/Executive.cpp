@@ -2590,9 +2590,9 @@ int ExecutiveMatrixCopy(PyMOLGlobals* G, const char* source_name,
   switch (source_mode) {
   case 0: /* txf history is the source matrix */
   {
-    double* history = nullptr;
+    double* src_history = nullptr;
     int found =
-        ExecutiveGetObjectMatrix(G, source_name, source_state, &history, false);
+        ExecutiveGetObjectMatrix(G, source_name, source_state, &src_history, false);
     if (found) {
 
       int iter_id = TrackerNewIter(I_Tracker, 0, list_id);
@@ -2607,6 +2607,15 @@ int ExecutiveMatrixCopy(PyMOLGlobals* G, const char* source_name,
             switch (target_mode) {
             case 0: /* apply changes to coordinates in the target object */
             {
+              /* Use a per-target copy of the source history so that
+                 modifications for one target don't corrupt the matrix
+                 for subsequent targets (avoids pointer aliasing bug) */
+              double history_buf[16];
+              double* history = nullptr;
+              if (src_history) {
+                copy44d(src_history, history_buf);
+                history = history_buf;
+              }
               double temp_inverse[16];
               if (target_undo) {
                 double* target_history = nullptr;
@@ -2642,9 +2651,9 @@ int ExecutiveMatrixCopy(PyMOLGlobals* G, const char* source_name,
               }
             } break;
             case 1: /* applying changes to the object's TTT matrix */
-              if (history) {
+              if (src_history) {
                 float tttf[16];
-                convertR44dTTTf(history, tttf);
+                convertR44dTTTf(src_history, tttf);
                 ExecutiveSetObjectTTT(G, rec->name, tttf, -1, quiet, -1);
               } else {
                 ExecutiveSetObjectTTT(G, rec->name, nullptr, -1, quiet, -1);
@@ -2653,7 +2662,7 @@ int ExecutiveMatrixCopy(PyMOLGlobals* G, const char* source_name,
               break;
             case 2: /* applying changes to the state matrix */
               ok =
-                  ExecutiveSetObjectMatrix(G, rec->name, target_state, history);
+                  ExecutiveSetObjectMatrix(G, rec->name, target_state, src_history);
               break;
             }
             break;
