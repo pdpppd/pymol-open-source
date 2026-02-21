@@ -11,6 +11,7 @@
 #include <string>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <vector>
 #include <memory>
 #include <array>
@@ -133,6 +134,13 @@ struct CifContentInfo {
   std::set<lexidx_t> chains_filter;
   std::set<std::string> polypeptide_entities; // entity ids
   std::map<std::string, seqvec_t> sequences;  // entity_id -> [resn1, resn2, ...]
+
+  // _pdbx_poly_seq_scheme: label_asym_id -> (label_seq_id -> auth numbering)
+  struct SeqSchemeEntry {
+    int auth_seq_id;
+    char ins_code;
+  };
+  std::unordered_map<std::string, std::unordered_map<int, SeqSchemeEntry>> seq_scheme;
 
   bool is_excluded_chain(const char * chain) const {
     if (chains_filter.empty())
@@ -1332,6 +1340,44 @@ static bool read_entity_poly(PyMOLGlobals * G, const pymol::cif_data * data, Cif
 }
 
 /**
+ * Read _pdbx_poly_seq_scheme to get the mapping from label_seq_id to
+ * auth_seq_id + insertion code. This is needed to correctly number
+ * missing residues when cif_use_auth is on and insertion codes are involved.
+ */
+static bool read_pdbx_poly_seq_scheme(PyMOLGlobals * G,
+    const pymol::cif_data * data, CifContentInfo &info) {
+  if (!info.use_auth)
+    return false;
+
+  const cif_array *arr_asym_id, *arr_seq_id, *arr_pdb_seq_num;
+
+  if (!(arr_asym_id     = data->get_arr("_pdbx_poly_seq_scheme.asym_id")) ||
+      !(arr_seq_id      = data->get_arr("_pdbx_poly_seq_scheme.seq_id")) ||
+      !(arr_pdb_seq_num = data->get_arr("_pdbx_poly_seq_scheme.pdb_seq_num")))
+    return false;
+
+  const cif_array *arr_pdb_ins_code =
+      data->get_arr("_pdbx_poly_seq_scheme.pdb_ins_code");
+
+  for (unsigned i = 0, n = arr_asym_id->size(); i < n; i++) {
+    if (arr_pdb_seq_num->is_missing(i))
+      continue;
+
+    CifContentInfo::SeqSchemeEntry entry;
+    entry.auth_seq_id = arr_pdb_seq_num->as_i(i);
+    entry.ins_code = '\0';
+
+    if (arr_pdb_ins_code && !arr_pdb_ins_code->is_missing(i)) {
+      entry.ins_code = makeInscode(arr_pdb_ins_code->as_s(i)[0]);
+    }
+
+    info.seq_scheme[arr_asym_id->as_s(i)][arr_seq_id->as_i(i)] = entry;
+  }
+
+  return true;
+}
+
+/**
  * Sub-routine for `add_missing_ca`
  *
  * @param i_ref Atom index of the next observed residue if `!at_terminus`,
@@ -1346,6 +1392,7 @@ static void add_missing_ca_sub(PyMOLGlobals * G,
     const int i_ref, int resv,
     const seqvec_t * current_seq,
     const char * entity_id,
+    const std::unordered_map<int, CifContentInfo::SeqSchemeEntry> * scheme = nullptr,
     bool at_terminus = true)
 {
   if (!atInfo[i_ref].temp1)
@@ -1360,12 +1407,28 @@ static void add_missing_ca_sub(PyMOLGlobals * G,
     if (!resn)
       continue;
 
-    int added_resv = current_resv + (atInfo[i_ref].resv - atInfo[i_ref].temp1);
+    int added_resv;
+    char added_inscode = '\0';
+    bool from_scheme = false;
 
-    if (!at_terminus && ((i_ref > 0 && added_resv <= atInfo[i_ref - 1].resv) ||
-                            added_resv >= atInfo[i_ref].resv)) {
-      // don't use insertion codes
-      continue;
+    // look up auth numbering from _pdbx_poly_seq_scheme
+    if (scheme) {
+      auto entry_it = scheme->find(current_resv);
+      if (entry_it != scheme->end()) {
+        added_resv = entry_it->second.auth_seq_id;
+        added_inscode = entry_it->second.ins_code;
+        from_scheme = true;
+      }
+    }
+
+    if (!from_scheme) {
+      added_resv = current_resv + (atInfo[i_ref].resv - atInfo[i_ref].temp1);
+
+      if (!at_terminus && ((i_ref > 0 && added_resv <= atInfo[i_ref - 1].resv) ||
+                              added_resv >= atInfo[i_ref].resv)) {
+        // don't use insertion codes
+        continue;
+      }
     }
 
     AtomInfoType *ai = atInfo.check(atomCount);
@@ -1381,6 +1444,7 @@ static void add_missing_ca_sub(PyMOLGlobals * G,
 
     ai->temp1 = current_resv;
     ai->resv = added_resv;
+    ai->setInscode(added_inscode);
 
     AtomInfoAssignParameters(G, ai);
     AtomInfoAssignColors(G, ai);
@@ -1408,6 +1472,7 @@ static bool add_missing_ca(PyMOLGlobals * G,
   int current_resv = 0;
   const seqvec_t * current_seq = nullptr;
   const char * current_entity_id = "";
+  const std::unordered_map<int, CifContentInfo::SeqSchemeEntry> * current_scheme = nullptr;
 
   for (int i = 0; i < oldAtomCount; ++i) {
     const char * entity_id = LexStr(G, atInfo[i].custom);
@@ -1420,11 +1485,12 @@ static bool add_missing_ca(PyMOLGlobals * G,
          add_missing_ca_sub(G,
              atInfo, current_resv, atomCount,
              i - 1, current_seq->size() + 1,
-             current_seq, current_entity_id);
+             current_seq, current_entity_id, current_scheme);
       }
 
       current_resv = 0;
       current_seq = nullptr;
+      current_scheme = nullptr;
       current_entity_id = entity_id;
 
       if (info.is_polypeptide(entity_id) && !info.is_excluded_chain(atInfo[i].segi)) {
@@ -1432,6 +1498,14 @@ static bool add_missing_ca(PyMOLGlobals * G,
         auto it = info.sequences.find(entity_id);
         if (it != info.sequences.end()) {
           current_seq = &it->second;
+        }
+
+        // get auth numbering scheme for this chain
+        if (!info.seq_scheme.empty()) {
+          auto scheme_it = info.seq_scheme.find(LexStr(G, atInfo[i].segi));
+          if (scheme_it != info.seq_scheme.end()) {
+            current_scheme = &scheme_it->second;
+          }
         }
       }
 
@@ -1443,7 +1517,7 @@ static bool add_missing_ca(PyMOLGlobals * G,
       add_missing_ca_sub(G,
           atInfo, current_resv, atomCount,
           i, atInfo[i].temp1,
-          current_seq, entity_id, false);
+          current_seq, entity_id, current_scheme, false);
     }
   }
 
@@ -1452,7 +1526,7 @@ static bool add_missing_ca(PyMOLGlobals * G,
     add_missing_ca_sub(G,
         atInfo, current_resv, atomCount,
         oldAtomCount - 1, current_seq->size() + 1,
-        current_seq, current_entity_id);
+        current_seq, current_entity_id, current_scheme);
   }
 
   atInfo.resize(atomCount);
@@ -2098,6 +2172,7 @@ ObjectMolecule *ObjectMoleculeReadCifData(PyMOLGlobals * G,
 
     // polymer information
     read_entity_poly(G, datablock, info);
+    read_pdbx_poly_seq_scheme(G, datablock, info);
 
     // missing residues
     if (!I->DiscreteFlag && !SettingGetGlobal_i(G, cSetting_retain_order)) {
