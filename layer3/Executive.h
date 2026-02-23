@@ -38,6 +38,7 @@ Z* -------------------------------------------------------------------
 #include "SpecRecSpecial.h"
 #include "Tracker.h"
 #include "TrackerList.h"
+#include "USalign.h"
 #include "Word.h"
 #include "vla.h"
 
@@ -254,6 +255,11 @@ int ExecutiveAlign(PyMOLGlobals* G, const char* s1, const char* s2,
     int state2, ExecutiveRMSInfo* rms_info, int transform, int reset,
     float seq_wt, float radius, float scale, float base, float coord_wt,
     float expect, int window, float ante);
+
+pymol::Result<pymol::usalign::TMAlignResult> ExecutiveUSalign(
+    PyMOLGlobals* G, const char* mobile_sele, const char* target_sele,
+    int mobile_state, int target_state, int quiet, int transform,
+    const char* oname, int fast);
 
 void ExecutiveUpdateColorDepends(PyMOLGlobals* G, ObjectMolecule* mol);
 void ExecutiveUpdateCoordDepends(PyMOLGlobals* G, ObjectMolecule* mol);

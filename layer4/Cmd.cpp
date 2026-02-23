@@ -1951,6 +1951,61 @@ static PyObject *CmdAlign(PyObject * self, PyObject * args)
   }
 }
 
+static PyObject *CmdUSalign(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  const char *mobile, *target, *oname;
+  int mobile_state, target_state, quiet, transform, fast;
+  API_SETUP_ARGS(G, self, args, "Ossiiiisi", &self,
+      &mobile, &target, &mobile_state, &target_state,
+      &quiet, &transform, &oname, &fast);
+  API_ASSERT(APIEnterNotModal(G));
+
+  OrthoLineType s1, s2;
+  int ok = (SelectorGetTmp(G, mobile, s1) >= 0) &&
+           (SelectorGetTmp(G, target, s2) >= 0);
+
+  // Store results in locals — can't call Py_BuildValue until after APIExit
+  double tm_target = 0, tm_mobile = 0, rmsd = 0, seq_id = 0;
+  int ali_len = 0;
+  bool have_result = false;
+  std::string err_msg;
+
+  if (ok) {
+    auto res = ExecutiveUSalign(G, s1, s2,
+        mobile_state, target_state, quiet, transform, oname, fast);
+    if (res) {
+      auto& r = res.result();
+      tm_target = r.tm_score_target;
+      tm_mobile = r.tm_score_mobile;
+      rmsd = r.rmsd;
+      ali_len = r.aligned_length;
+      seq_id = r.seq_identity;
+      have_result = true;
+    } else {
+      err_msg = res.error().what();
+    }
+  }
+
+  SelectorFreeTmp(G, s1);
+  SelectorFreeTmp(G, s2);
+  APIExit(G);
+
+  if (have_result) {
+    return Py_BuildValue("{s:d,s:d,s:d,s:i,s:d}",
+        "tm_score_target", tm_target,
+        "tm_score_mobile", tm_mobile,
+        "RMSD", rmsd,
+        "alignment_length", ali_len,
+        "seq_identity", seq_id);
+  }
+  if (!err_msg.empty()) {
+    PyErr_SetString(PyExc_RuntimeError, err_msg.c_str());
+    return nullptr;
+  }
+  return APIFailure();
+}
+
 static PyObject *CmdGetCoordsAsNumPy(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -6613,6 +6668,7 @@ static PyMethodDef Cmd_methods[] = {
   {"unset", CmdUnset, METH_VARARGS},
   {"unset_bond", CmdUnsetBond, METH_VARARGS},
   {"update", CmdUpdate, METH_VARARGS},
+  {"usalign", CmdUSalign, METH_VARARGS},
   {"window", CmdWindow, METH_VARARGS},
   {"zoom", CmdZoom, METH_VARARGS},
   {NULL, nullptr}                  /* sentinel */
