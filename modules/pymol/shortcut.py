@@ -192,7 +192,7 @@ class Shortcut:
                 lst.sort()
                 lst = parsing.list_to_str_list(lst)
                 msg += " Choices:\n" + "\n".join(lst)
-                raise parsing.QuietException(msg)
+            raise parsing.QuietException(msg)
 
         if isinstance(result, list) and descrip is not None:
             lst = parsing.list_to_str_list(result)
