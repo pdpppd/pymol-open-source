@@ -142,11 +142,11 @@ Execute the pipeline (prep, apbs, surface vis)
         if warnings:
             @form._callInMainThread
             def result():
-                msgbox = QMessageBox(QMessageBox.Question, 'Continue?',
+                msgbox = QMessageBox(QMessageBox.Icon.Question, 'Continue?',
                     method + ' emmitted warnings, do you want to continue?',
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No , form._dialog)
                 msgbox.setDetailedText(warnings)
-                return msgbox.exec_()
+                return msgbox.exec()
 
             if result == QMessageBox.StandardButton.No:
                 raise SilentAbort
