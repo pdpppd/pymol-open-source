@@ -16,6 +16,7 @@ I* Additional authors of this source file include:
 Z* -------------------------------------------------------------------
 */
 
+#include <array>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -38,6 +39,7 @@ Z* -------------------------------------------------------------------
 #include "CoordSet.h"
 
 #include "AtomIterators.h"
+#include "AtomNeighbors.h"
 
 enum {
   CARTOON_CYLINDRICAL_HELICES_CURVED = 1,
@@ -287,6 +289,54 @@ void RepCartoon::render(RenderInfo* info)
 #define NUCLEIC_NORMAL0 "C2"
 #define NUCLEIC_NORMAL1 "C3*"
 #define NUCLEIC_NORMAL2 "C3'"
+
+struct BondPathStep {
+  const char* name;
+  const char* name_alt; // e.g. star variant, or nullptr
+  int protons;
+};
+
+/**
+ * @brief follows a bond path from `start` through atoms matching the given
+ * names. Each step finds a bonded neighbor matching name/name_alt that hasn't
+ * been visited.
+ * @param obj of atoms whose bonds are followed
+ * @param start index of starting atom
+ * @param steps sequence of Bond paths to navigate
+ * @param marked per-atom flags for atoms already claimed by a ring; skipped
+ * during traversal
+ * @return the atom index at the end of the path, or -1 if not found.
+ */
+template <size_t N>
+static int FollowBondPath(const ObjectMolecule* obj, int start,
+    const std::array<BondPathStep, N>& steps, const int* marked)
+{
+  auto* atomInfo = obj->AtomInfo.data();
+  int prev = -1;
+  int cur = start;
+
+  for (const auto& step : steps) {
+    int next = -1;
+    for (const auto& nbr : AtomNeighbors(obj, cur)) {
+      if (nbr.atm != prev && atomInfo[nbr.atm].protons == step.protons &&
+          (!marked || !marked[nbr.atm])) {
+        auto aname = LexStr(obj->G, atomInfo[nbr.atm].name);
+        if (WordMatchExact(obj->G, step.name, aname, 1) ||
+            (step.name_alt &&
+                WordMatchExact(obj->G, step.name_alt, aname, 1))) {
+          next = nbr.atm;
+          break;
+        }
+      }
+    }
+    if (next < 0) {
+      return -1;
+    }
+    prev = cur;
+    cur = next;
+  }
+  return cur;
+}
 
 #define MAX_RING_ATOM 10
 
@@ -733,6 +783,30 @@ static void do_ring(PyMOLGlobals * G, nuc_acid_data *ndata, int n_atom,
           }
         }
       }
+      /* PNA: find base_at and sugar_at via N1/N9 -> C8' -> C7' -> N4' path */
+      if(sugar_at < 0 && base_at < 0 && (n_atom == 5 || n_atom == 6)) {
+        static const std::array<BondPathStep, 3> pna_path = {{
+            {"C8'", "C8*", cAN_C},
+            {"C7'", "C7*", cAN_C},
+            {"N4'", "N4*", cAN_N},
+        }};
+        for(i = 0; i < n_atom; i++) {
+          a1 = atix[i];
+          ai = atomInfo + a1;
+          if(ai->protons == cAN_N && !marked[a1] &&
+             (WordMatchExact(G, "N1", LexStr(G, ai->name), 1) ||
+              WordMatchExact(G, "N9", LexStr(G, ai->name), 1))) {
+            int n4_at = FollowBondPath(obj, a1, pna_path, marked);
+            if(n4_at >= 0) {
+              base_at = a1;
+              sugar_at = n4_at;
+              if(!nf) nf = nuc_flag[a1];
+              break;
+            }
+          }
+        }
+      }
+
       if(n_atom == 6) {
 
         for(i = 0; i < n_atom; i++) {
@@ -1414,7 +1488,8 @@ static void nuc_acid(PyMOLGlobals * G, nuc_acid_data *ndata, int a, int a1,
 
   if(ndata->a2 >= 0) {
     if(set_flags) {
-      if((obj->AtomInfo[ndata->a2].protons == cAN_P) && (!nuc_flag[ndata->a2])) {
+      if(AtomInfoIsNucBackboneTrace(LexStr(G, obj->AtomInfo[ndata->a2].name),
+          obj->AtomInfo[ndata->a2].protons) && (!nuc_flag[ndata->a2])) {
         int *nf = nullptr;
         AtomInfoBracketResidueFast(G, obj->AtomInfo, obj->NAtom, ndata->a2, &st, &nd);
 
@@ -3178,8 +3253,7 @@ void RepCartoonGeneratePASS1(PyMOLGlobals *G, RepCartoon *I, ObjectMolecule *obj
     } else if(
         !AtomInfoSameResidueP(G, last_ai, ai)
         && (ndata->na_mode != 1 ?
-          // P atom
-          (ai->protons == cAN_P && WordMatchExact(G, "P", ai_name, true)) :
+          AtomInfoIsNucBackboneTrace(ai_name, ai->protons) :
           // C3* C3' atom
           (ai->protons == cAN_C && (WordMatchExact(G, NUCLEIC_NORMAL1, ai_name, 1) ||
                                     WordMatchExact(G, NUCLEIC_NORMAL2, ai_name, 1))))) {
