@@ -204,6 +204,7 @@ def get_command_keywords(self_cmd=cmd):
         'pi_interactions': [ self_cmd.pi_interactions  , 0,  0 , ''  , parsing.STRICT ],
         'pop'           : [ self_cmd.pop               , 0 , 0 , ''  , parsing.STRICT ],
         'protect'       : [ self_cmd.protect           , 0 , 0 , ''  , parsing.STRICT ],
+        'protonate'     : [ self_cmd.protonate         , 0 , 0 , ''  , parsing.STRICT ],
         'pseudoatom'    : [ self_cmd.pseudoatom        , 0 , 0 , ''  , parsing.STRICT ],
         'pwd'           : [ self_cmd.pwd               , 0 , 0 , ''  , parsing.STRICT ],
         'python'        : [ self_cmd.helping.python    , 0 , 2 , ',' , parsing.PYTHON_BLOCK ],

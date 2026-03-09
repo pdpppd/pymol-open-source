@@ -219,6 +219,7 @@ from .editing import \
       pbc_unwrap, \
       pbc_wrap, \
       protect,            \
+      protonate,          \
       push_undo,          \
       rebond,             \
       reference,          \
