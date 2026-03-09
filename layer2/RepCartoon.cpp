@@ -17,6 +17,8 @@ Z* -------------------------------------------------------------------
 */
 
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 #include"os_predef.h"
 #include"os_std.h"
@@ -315,6 +317,17 @@ typedef struct nuc_acid_data {
   char alt;
   char next_alt;
 } nuc_acid_data;
+
+/**
+ * @brief Stores the trace array index range for a cyclic cartoon segment.
+ *
+ * Used to identify segments where the last residue's CA bonds back to the
+ * first residue's CA (e.g. cyclic peptides with a covale bond in _struct_conn).
+ */
+struct CyclicSegmentInfo {
+  int firstIdx;  ///< Index of the first atom in the segment's trace arrays
+  int lastIdx;   ///< Index of the last atom in the segment's trace arrays
+};
 
 /**
  * Return true if a connector between the two atoms should be drawn.
@@ -2413,7 +2426,8 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
                            float *dl,
                            const CCInOut *car,
                            int *seg, int *at, int *nuc_flag,
-                           float *putty_vals, float alpha){
+                           float *putty_vals, float alpha,
+                           const std::unordered_map<int, CyclicSegmentInfo>* cyclicSegs = nullptr){
   PyMOLGlobals *G = cs->G;
   int ok = true;
   CGO *cgo;
@@ -2569,10 +2583,42 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
     extrudeFlag = false;
     contigFlag = false;
 
+    // Pre-compute which atoms at the start of a cyclic segment will be consumed
+    // by the closing edge extension. The closing edge extrusion continues past
+    // firstIdx so that the tube is one continuous piece with no seam.
+    std::unordered_set<int> cyclicSkipAtoms;
+    if (cyclicSegs) {
+      for (auto& [segId, cinfo] : *cyclicSegs) {
+        int closureCar = car[cinfo.lastIdx].getCCIn();
+        // Check if the first atoms match the closure cartoon type
+        for (int i = cinfo.firstIdx; i < cinfo.lastIdx; i++) {
+          if (seg[i] != segId) break;
+          if (car[i].getCCIn() != closureCar) break;
+          cyclicSkipAtoms.insert(i);
+        }
+      }
+    }
+
     const auto helix_radius = SettingGet<float>(
         G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_helix_radius);
 
     while(contFlag) {
+      // Skip atoms that will be consumed by cyclic closure extension
+      if (!cyclicSkipAtoms.empty() && cyclicSkipAtoms.count(a)) {
+        v1 += 3;
+        v2 += 3;
+        vo += 3;
+        d++;
+        atp += 1;
+        segptr++;
+        cc++;
+        a++;
+        if(a == nAt) {
+          contFlag = false;
+        }
+        continue;
+      }
+
       if (CheckExtrudeContigFlags(nAt, n_p, a, &cur_car, cc, segptr, &contigFlag, &extrudeFlag)){
         EXTRUDE_TRUNCATE();
       }
@@ -2626,6 +2672,94 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
             contigFlag = false;
         }
 
+        // Detect if this extrusion closes a cyclic segment.
+        // Only trigger when:
+        // 1. We've reached the last atom of the cyclic segment
+        // 2. The first atom's cartoon type matches the current extrusion type
+        //    (otherwise we'd stretch a tube/loop into an arrow/sheet)
+        bool isCyclicExtrusion = false;
+        if (ok && cyclicSegs && n_p > 0) {
+          int lastSegId = *(segptr - 1);
+          auto cit = cyclicSegs->find(lastSegId);
+          if (cit != cyclicSegs->end() && (a - 1) == cit->second.lastIdx) {
+            auto const& cinfo = cit->second;
+            int firstCarType = car[cinfo.firstIdx].getCCIn();
+            if (firstCarType == cur_car) {
+              isCyclicExtrusion = true;
+
+            // Generate closing edge samples (last atom -> first atom)
+            float close_v1[6], close_v2[6], close_vo[6];
+            copy3f(pv + cinfo.lastIdx * 3, close_v1);
+            copy3f(pv + cinfo.firstIdx * 3, close_v1 + 3);
+            copy3f(tv + cinfo.lastIdx * 3, close_v2);
+            copy3f(tv + cinfo.firstIdx * 3, close_v2 + 3);
+            copy3f(pvo + cinfo.lastIdx * 3, close_vo);
+            copy3f(pvo + cinfo.firstIdx * 3, close_vo + 3);
+
+            int closeAtom1 = cs->IdxToAtm[at[cinfo.lastIdx]];
+            int closeAtom2 = cs->IdxToAtm[at[cinfo.firstIdx]];
+            auto* ai1 = obj->AtomInfo + closeAtom1;
+            auto* ai2 = obj->AtomInfo + closeAtom2;
+
+            float alpha1 = alpha, alpha2 = alpha;
+            ComputeCartoonAtomColors(G, obj, cs, nuc_flag, closeAtom1,
+                closeAtom2, &c1, &c2, &at[cinfo.lastIdx], &car[cinfo.lastIdx],
+                cur_car, cartoon_color, alpha1, alpha2, nucleic_color,
+                discrete_colors, n_p, contigFlag);
+
+            dev = throw_ * dl[cinfo.lastIdx];
+
+            auto const cur_sampling = (cur_car == cCartoon_cylinder)
+                                          ? sampling_cylindrical_helices
+                                          : sampling;
+
+            CartoonGenerateSample(G, cur_sampling, &n_p, dev, close_vo,
+                close_v1, close_v2, c1, c2, alpha1, alpha2,
+                ai1->masked ? -1 : closeAtom1,
+                ai2->masked ? -1 : closeAtom2, power_a, power_b,
+                &vc, &valpha, &vi, &v, &vn);
+
+            CartoonGenerateRefine(refine, cur_sampling, v, vn, close_vo,
+                sampling_tmp);
+
+            // Continue past firstIdx through skipped atoms so this extrusion
+            // covers the full loop section with no seam at the joint
+            for (int ci = cinfo.firstIdx;
+                 ci < cinfo.lastIdx && seg[ci] == lastSegId &&
+                 car[ci].getCCIn() == cur_car && seg[ci] == seg[ci + 1];
+                 ci++) {
+              float cont_v1[6], cont_v2[6], cont_vo[6];
+              copy3f(pv + ci * 3, cont_v1);
+              copy3f(pv + (ci + 1) * 3, cont_v1 + 3);
+              copy3f(tv + ci * 3, cont_v2);
+              copy3f(tv + (ci + 1) * 3, cont_v2 + 3);
+              copy3f(pvo + ci * 3, cont_vo);
+              copy3f(pvo + (ci + 1) * 3, cont_vo + 3);
+
+              int contAtom1 = cs->IdxToAtm[at[ci]];
+              int contAtom2 = cs->IdxToAtm[at[ci + 1]];
+              auto* cai1 = obj->AtomInfo + contAtom1;
+              auto* cai2 = obj->AtomInfo + contAtom2;
+
+              float ca1 = alpha, ca2 = alpha;
+              ComputeCartoonAtomColors(G, obj, cs, nuc_flag, contAtom1,
+                  contAtom2, &c1, &c2, &at[ci], &car[ci],
+                  cur_car, cartoon_color, ca1, ca2, nucleic_color,
+                  discrete_colors, n_p, contigFlag);
+
+              dev = throw_ * dl[ci];
+              CartoonGenerateSample(G, cur_sampling, &n_p, dev, cont_vo,
+                  cont_v1, cont_v2, c1, c2, ca1, ca2,
+                  cai1->masked ? -1 : contAtom1,
+                  cai2->masked ? -1 : contAtom2, power_a, power_b,
+                  &vc, &valpha, &vi, &v, &vn);
+              CartoonGenerateRefine(refine, cur_sampling, v, vn, cont_vo,
+                  sampling_tmp);
+            }
+            } // if firstCarType matches
+          }
+        }
+
         if(ok && (cur_car != cCartoon_skip) && (cur_car != cCartoon_skip_helix)) {
           if((cartoon_debug > 0.5) && (cartoon_debug < 2.5)) {
             ok = GenerateRepCartoonDrawDebugNormals(cgo, ex, n_p);
@@ -2639,7 +2773,8 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
           /* set up shape */
           switch (cur_car) {
           case cCartoon_tube:
-            ok = CartoonExtrudeTube(use_cylinders_for_strands, ex, cgo, tube_radius, tube_quality, tube_cap);
+            ok = CartoonExtrudeTube(use_cylinders_for_strands, ex, cgo, tube_radius, tube_quality,
+                isCyclicExtrusion ? cCylCap::Flat : tube_cap);
             break;
           case cCartoon_putty:
             ok = CartoonExtrudePutty(G, obj, cs, cgo, ex, putty_quality, putty_radius, putty_vals, sampling);
@@ -2647,7 +2782,8 @@ CGO *GenerateRepCartoonCGO(CoordSet *cs, ObjectMolecule *obj, nuc_acid_data *nda
               contFlag = false;
             break;
           case cCartoon_loop:
-            ok = CartoonExtrudeCircle(ex, cgo, use_cylinders_for_strands, loop_quality, loop_radius, loop_cap);
+            ok = CartoonExtrudeCircle(ex, cgo, use_cylinders_for_strands, loop_quality, loop_radius,
+                isCyclicExtrusion ? cCylCap::None : loop_cap);
             break;
           case cCartoon_dash:
             ok = CartoonExtrudeCircle(ex, cgo, use_cylinders_for_strands, loop_quality, loop_radius, loop_cap, 2);
@@ -3137,6 +3273,60 @@ void RepCartoonComputePuttyValues(ObjectMolecule *obj, float *putty_vals){
   }
 }
 
+/**
+ * @brief Detect cyclic segments after PASS1 trace collection.
+ *
+ * Scans segment boundaries and uses ObjectMoleculeCheckBondSep to determine
+ * if the last CA in a segment is connected back to the first CA through
+ * 3 bonds (CA-C-N-CA), indicating a cyclic peptide backbone.
+ *
+ * @param obj    The molecule object (used for bond connectivity check)
+ * @param cs     The coordinate set
+ * @param nAt    Number of atoms in the trace arrays
+ * @param seg    Segment ID array (per trace atom)
+ * @param at     CoordSet atom index array (per trace atom)
+ * @return Map from segment ID to CyclicSegmentInfo for each cyclic segment
+ */
+static std::unordered_map<int, CyclicSegmentInfo>
+RepCartoonDetectCyclicSegments(ObjectMolecule* obj, CoordSet* cs,
+                               int nAt, const int* seg, const int* at)
+{
+  std::unordered_map<int, CyclicSegmentInfo> result;
+  if (nAt < 3)
+    return result;
+
+  // Find first and last index for each segment
+  std::unordered_map<int, CyclicSegmentInfo> segBounds;
+  for (int a = 0; a < nAt; a++) {
+    int segId = seg[a];
+    auto it = segBounds.find(segId);
+    if (it == segBounds.end()) {
+      segBounds[segId] = {a, a};
+    } else {
+      it->second.lastIdx = a;
+    }
+  }
+
+  // Check each segment for cyclic connectivity (CA-C-N-CA = 3 bonds)
+  for (auto& [segId, info] : segBounds) {
+    int segLen = info.lastIdx - info.firstIdx + 1;
+    if (segLen < 3)
+      continue;
+
+    int firstAtom = cs->IdxToAtm[at[info.firstIdx]];
+    int lastAtom = cs->IdxToAtm[at[info.lastIdx]];
+
+    if (ObjectMoleculeCheckBondSep(obj, firstAtom, lastAtom, 3)) {
+      assert(info.firstIdx >= 0 && info.firstIdx < nAt);
+      assert(info.lastIdx >= 0 && info.lastIdx < nAt);
+      assert(info.firstIdx < info.lastIdx);
+      result[segId] = info;
+    }
+  }
+
+  return result;
+}
+
 static
 void RepCartoonComputeDifferencesAndNormals(PyMOLGlobals *G, int nAt, int *seg, float *pv, float *dv, float *nv, float *dl, int quiet){
   float *v1, *v2, *vptr, *d;
@@ -3209,6 +3399,176 @@ void RepCartoonComputeTangents(int nAt, int *seg, float *nv, float *tv){
   *(v1++) = *(vptr - 3);         /* last segment */
   *(v1++) = *(vptr - 2);
   *(v1++) = *(vptr - 1);
+}
+
+/**
+ * @brief Compute difference vectors, normals, and distances with cyclic wrap-around.
+ *
+ * Like RepCartoonComputeDifferencesAndNormals, but for the last atom in a cyclic
+ * segment, computes the difference vector from lastIdx to firstIdx (wrap-around)
+ * instead of leaving it zeroed. This provides correct spline tangent data at the
+ * cyclic closure point.
+ *
+ * @param G          PyMOL globals
+ * @param nAt        Number of trace atoms
+ * @param seg        Segment ID array
+ * @param pv         Positions array (3f per atom)
+ * @param dv         [out] Difference vectors (3f per atom)
+ * @param nv         [out] Normalized direction vectors (3f per atom)
+ * @param dl         [out] Distance between consecutive atoms (1f per atom)
+ * @param quiet      If false, print debug feedback
+ * @param cyclicSegs Map of cyclic segment info (from RepCartoonDetectCyclicSegments)
+ */
+static void RepCartoonComputeDifferencesAndNormalsCyclic(
+    PyMOLGlobals* G, int nAt, int* seg, float* pv, float* dv, float* nv,
+    float* dl, int quiet,
+    const std::unordered_map<int, CyclicSegmentInfo>& cyclicSegs)
+{
+  float *v1, *v2, *vptr, *d;
+  int *sptr, a;
+  sptr = seg;
+  vptr = pv;
+  v1 = dv;
+  v2 = nv;
+  d = dl;
+  for (a = 0; a < (nAt - 1); a++) {
+    if (*sptr == *(sptr + 1)) {
+      subtract3f(vptr + 3, vptr, v1);
+      *d = (float) length3f(v1);
+      if (*d > R_SMALL4) {
+        float d_1 = 1.0F / (*d);
+        scale3f(v1, d_1, v2);
+      } else if (a) {
+        copy3f(v2 - 3, v2);
+      } else {
+        zero3f(v2);
+      }
+    } else {
+      // Segment boundary — check if last atom of a cyclic segment
+      auto it = cyclicSegs.find(*sptr);
+      if (it != cyclicSegs.end() && a == it->second.lastIdx) {
+        // Wrap: difference from last to first atom of segment
+        float* firstPos = pv + it->second.firstIdx * 3;
+        subtract3f(firstPos, vptr, v1);
+        *d = (float) length3f(v1);
+        if (*d > R_SMALL4) {
+          float d_1 = 1.0F / (*d);
+          scale3f(v1, d_1, v2);
+        } else {
+          copy3f(v2 - 3, v2);
+        }
+      } else {
+        zero3f(v2);
+      }
+    }
+    d++;
+    vptr += 3;
+    v1 += 3;
+    v2 += 3;
+    sptr++;
+  }
+
+  // Handle last atom (a = nAt - 1) for cyclic segments
+  {
+    auto it = cyclicSegs.find(*sptr);
+    if (it != cyclicSegs.end() && (nAt - 1) == it->second.lastIdx) {
+      float* firstPos = pv + it->second.firstIdx * 3;
+      subtract3f(firstPos, vptr, v1);
+      *d = (float) length3f(v1);
+      if (*d > R_SMALL4) {
+        float d_1 = 1.0F / (*d);
+        scale3f(v1, d_1, v2);
+      } else {
+        copy3f(v2 - 3, v2);
+      }
+    }
+  }
+}
+
+/**
+ * @brief Compute tangent vectors with cyclic wrap-around at segment boundaries.
+ *
+ * Like RepCartoonComputeTangents, but at the first and last atoms of cyclic
+ * segments, averages the tangent with the wrap-around neighbor's direction
+ * vector instead of simply copying the endpoint direction.
+ *
+ * @param nAt        Number of trace atoms
+ * @param seg        Segment ID array
+ * @param nv         Normalized direction vectors (input, from differences pass)
+ * @param tv         [out] Tangent vectors (3f per atom)
+ * @param cyclicSegs Map of cyclic segment info
+ */
+static void RepCartoonComputeTangentsCyclic(
+    int nAt, int* seg, float* nv, float* tv,
+    const std::unordered_map<int, CyclicSegmentInfo>& cyclicSegs)
+{
+  float *vptr, *v1;
+  int *sptr, a;
+  sptr = seg;
+  vptr = nv;
+  v1 = tv;
+
+  // First atom
+  {
+    auto it = cyclicSegs.find(*sptr);
+    if (it != cyclicSegs.end() && it->second.firstIdx == 0) {
+      // Cyclic: average with the last normal of this segment
+      float* lastNv = nv + it->second.lastIdx * 3;
+      add3f(vptr, lastNv, v1);
+      normalize3f(v1);
+      v1 += 3;
+      vptr += 3;
+      sptr++;
+    } else {
+      *(v1++) = *(vptr++);
+      *(v1++) = *(vptr++);
+      *(v1++) = *(vptr++);
+      sptr++;
+    }
+  }
+
+  for (a = 1; a < (nAt - 1); a++) {
+    if ((*sptr == *(sptr - 1)) && (*sptr == *(sptr + 1))) {
+      add3f(vptr, (vptr - 3), v1);
+      normalize3f(v1);
+    } else if (*sptr == *(sptr - 1)) {
+      // End of segment
+      auto it = cyclicSegs.find(*sptr);
+      if (it != cyclicSegs.end() && a == it->second.lastIdx) {
+        // Cyclic: average current with wrap-around normal
+        add3f(vptr - 3, nv + it->second.lastIdx * 3, v1);
+        normalize3f(v1);
+      } else {
+        copy3f(vptr - 3, v1);
+      }
+    } else if (*sptr == *(sptr + 1)) {
+      // Start of segment
+      auto it = cyclicSegs.find(*sptr);
+      if (it != cyclicSegs.end() && a == it->second.firstIdx) {
+        float* lastNv = nv + it->second.lastIdx * 3;
+        add3f(vptr, lastNv, v1);
+        normalize3f(v1);
+      } else {
+        copy3f(vptr, v1);
+      }
+    }
+    vptr += 3;
+    v1 += 3;
+    sptr++;
+  }
+
+  // Last atom
+  {
+    auto it = cyclicSegs.find(*sptr);
+    if (it != cyclicSegs.end() && (nAt - 1) == it->second.lastIdx) {
+      add3f(vptr - 3, nv + it->second.lastIdx * 3, v1);
+      normalize3f(v1);
+    } else {
+      *(v1++) = *(vptr - 3);
+      *(v1++) = *(vptr - 2);
+      *(v1++) = *(vptr - 1);
+    }
+  }
 }
 
 static
@@ -3786,6 +4146,9 @@ Rep *RepCartoonNew(CoordSet * cs, int state)
     RepCartoonComputePuttyValues(obj, putty_vals);
   }
 
+  // Detect cyclic segments (e.g. cyclic peptides like 2NB5)
+  auto cyclicSegs = RepCartoonDetectCyclicSegments(obj, cs, nAt, seg, at);
+
   PRINTFD(G, FB_RepCartoon)
     " RepCartoon-Debug: path outlined, interpolating... nAt=%d\n", nAt ENDFD;
 
@@ -3793,11 +4156,19 @@ Rep *RepCartoonNew(CoordSet * cs, int state)
     dv = pymol::malloc<float>(nAt * 3);  /* differences between next and current 3f */
     nv = pymol::malloc<float>(nAt * 3);  /* normal */
     dl = pymol::malloc<float>(nAt);      /* length (i.e., normal * length = difference) */
-    RepCartoonComputeDifferencesAndNormals(G, nAt, seg, pv, dv, nv, dl, true);
+    if (cyclicSegs.empty()) {
+      RepCartoonComputeDifferencesAndNormals(G, nAt, seg, pv, dv, nv, dl, true);
+    } else {
+      RepCartoonComputeDifferencesAndNormalsCyclic(G, nAt, seg, pv, dv, nv, dl, true, cyclicSegs);
+    }
 
     /* compute tangents */
     tv = pymol::malloc<float>(nAt * 3 + 6);
-    RepCartoonComputeTangents(nAt, seg, nv, tv);
+    if (cyclicSegs.empty()) {
+      RepCartoonComputeTangents(nAt, seg, nv, tv);
+    } else {
+      RepCartoonComputeTangentsCyclic(nAt, seg, nv, tv, cyclicSegs);
+    }
 
     PRINTFD(G, FB_RepCartoon)
       " RepCartoon-Debug: generating coordinate systems...\n" ENDFD;
@@ -3820,9 +4191,17 @@ Rep *RepCartoonNew(CoordSet * cs, int state)
           RepCartoonSmoothLoops(G, obj, cs, &ndata, nAt, seg, pv, sstype, pvo, tv, tmp, flag_tmp);
         }
         /* recompute differences and normals */
-        RepCartoonComputeDifferencesAndNormals(G, nAt, seg, pv, dv, nv, dl, true);
+        if (cyclicSegs.empty()) {
+          RepCartoonComputeDifferencesAndNormals(G, nAt, seg, pv, dv, nv, dl, true);
+        } else {
+          RepCartoonComputeDifferencesAndNormalsCyclic(G, nAt, seg, pv, dv, nv, dl, true, cyclicSegs);
+        }
         /* recompute tangents */
-        RepCartoonComputeTangents(nAt, seg, nv, tv);
+        if (cyclicSegs.empty()) {
+          RepCartoonComputeTangents(nAt, seg, nv, tv);
+        } else {
+          RepCartoonComputeTangentsCyclic(nAt, seg, nv, tv, cyclicSegs);
+        }
         if(cartoon_flat_sheets) {
           RepCartoonFlattenSheetsRefineTips(G, obj, cs, nAt, seg, sstype, tv);
         }
@@ -3830,9 +4209,11 @@ Rep *RepCartoonNew(CoordSet * cs, int state)
     }
   }
 
+
+    auto* cyclicSegsPtr = cyclicSegs.empty() ? nullptr : &cyclicSegs;
     CGO* preshadercgo =
         GenerateRepCartoonCGO(cs, obj, &ndata, na_strands_as_cylinders, pv, nAt,
-            tv, pvo, dl, car, seg, at, nuc_flag, putty_vals, alpha);
+            tv, pvo, dl, car, seg, at, nuc_flag, putty_vals, alpha, cyclicSegsPtr);
 
     if (preshadercgo && preshadercgo->has_begin_end) {
       CGOCombineBeginEnd(&preshadercgo);
