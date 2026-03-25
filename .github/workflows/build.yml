@@ -9,7 +9,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
     - uses: actions/checkout@v4
@@ -60,57 +60,31 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-
-    env:
-      CONDA_ENV_NAME: "testing_env"
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install Miniforge
-      run: |
-        choco install miniforge3
+    - name: Set up Pixi
+      uses: prefix-dev/setup-pixi@v0.8.8
 
-    - name: Add conda to PATH
-      run: |
-        echo "$env:CONDA" | Out-File -Append -FilePath $env:GITHUB_PATH
-        echo "$env:CONDA\Scripts" | Out-File -Append -FilePath $env:GITHUB_PATH
-
-    - name: Set up Miniforge
-      run: |
-        conda init powershell
-        conda create --name $env:CONDA_ENV_NAME -c conda-forge -c schrodinger --override-channels `
-            python=${{ matrix.python-version }} `
-            pip `
-            catch2=2.13.3 `
-            collada2gltf `
-            freetype `
-            glew `
-            glm `
-            libpng `
-            libxml2-devel `
-            libnetcdf `
+    - name: Set Python version
+      run: pixi add "python==${{ matrix.python-version }}.*"
 
     - name: Get additional sources
+      shell: bash
       run: |
-        conda activate $env:CONDA_ENV_NAME
-
+        PIXI_PREFIX="$(pixi info --json | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["environments_info"][0]["prefix"])')"
         git clone --depth 1 https://github.com/rcsb/mmtf-cpp.git
-        Copy-Item -Recurse -Path mmtf-cpp/include\* -Destination "$env:CONDA_PREFIX\Library\include"
+        cp -R mmtf-cpp/include/* "${PIXI_PREFIX}/Library/include/"
         git clone --depth 1 --single-branch --branch cpp_master https://github.com/msgpack/msgpack-c.git
-        Copy-Item -Recurse -Path msgpack-c/include\* -Destination "$env:CONDA_PREFIX\Library\include"
-        dir $env:CONDA_PREFIX\Library\include
+        cp -R msgpack-c/include/* "${PIXI_PREFIX}/Library/include/"
 
     - name: Build PyMOL
-      run: |
-        conda activate $env:CONDA_ENV_NAME
-        pip install -v --config-settings testing=True .[dev]
+      run: pixi run pip install -v --config-settings testing=True .[dev]
 
     - name: Test
-      run: |
-        conda activate $env:CONDA_ENV_NAME
-        pymol -ckqy testing\testing.py --run all
+      run: pixi run pymol -ckqy testing\testing.py --run all
 
 
   build-MacOS:
@@ -119,54 +93,28 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-
-    env:
-      CONDA_ROOT: "/tmp/miniforge"
-      CONDA_ENV_NAME: "testing_env"
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-    - uses: actions/checkout@v4.0.0
+    - uses: actions/checkout@v4
 
-    - name: Download Miniforge
-      run: |
-        curl -L -o $CONDA_ROOT.sh https://github.com/conda-forge/miniforge/releases/download/24.11.0-0/Miniforge3-MacOSX-x86_64.sh
-        bash $CONDA_ROOT.sh -b -p $CONDA_ROOT
+    - name: Set up Pixi
+      uses: prefix-dev/setup-pixi@v0.8.8
 
-    - name: Add conda to PATH
-      run: |
-        echo "${CONDA_ROOT}/bin" >> "$GITHUB_PATH"
-
-    - name: Set up Miniforge
-      run: |
-        conda create --name $CONDA_ENV_NAME -c conda-forge -c schrodinger --override-channels \
-            python=${{ matrix.python-version }} \
-            pip \
-            catch2=2.13.3 \
-            collada2gltf \
-            freetype \
-            glew \
-            glm \
-            libpng \
-            libxml2-devel \
-            libnetcdf
+    - name: Set Python version
+      run: pixi add "python==${{ matrix.python-version }}.*"
 
     - name: Get additional sources
       run: |
-        source activate $CONDA_ENV_NAME
+        PIXI_PREFIX="$(pixi info --json | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["environments_info"][0]["prefix"])')"
         git clone --depth 1 https://github.com/rcsb/mmtf-cpp.git
-        cp -R mmtf-cpp/include/* ${CONDA_PREFIX}/include/
+        cp -R mmtf-cpp/include/* "${PIXI_PREFIX}/include/"
         git clone --depth 1 --single-branch --branch cpp_master https://github.com/msgpack/msgpack-c.git
-        cp -R msgpack-c/include/* ${CONDA_PREFIX}/include/
+        cp -R msgpack-c/include/* "${PIXI_PREFIX}/include/"
 
     - name: Build PyMOL
-      run: |
-        source activate $CONDA_ENV_NAME
-        export MACOSX_DEPLOYMENT_TARGET=12.0
-        pip install -v --config-settings testing=True '.[dev]'
+      run: pixi run bash -c 'MACOSX_DEPLOYMENT_TARGET=12.0 pip install -v --config-settings testing=True ".[dev]"'
 
     - name: Test
-      run: |
-        source activate $CONDA_ENV_NAME
-        pymol -ckqy testing/testing.py --run all
+      run: pixi run pymol -ckqy testing/testing.py --run all
 
