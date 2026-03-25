@@ -147,3 +147,49 @@ def test_protonate_fallback_low_pH():
     n_his = cmd.count_atoms("1rx1 and not hydro and resn HIS and name ND1")
     assert his_nd1_h == n_his, \
         "His ND1 should be protonated at pH 2.0"
+
+
+def _build_single_nuc(nuc_acid, nuc_type, obj_name, chain='A'):
+    """Helper: build a single nucleotide and return the object name.
+
+    Creates a nucleotide from scratch via attach_nuc_acid, then optionally
+    alters the chain to the requested value.
+    """
+    from pymol import editor
+    # Build from scratch (0 atoms selected) — always creates chain 'A'
+    cmd.select("sele", "none")
+    editor.attach_nuc_acid("sele", nuc_acid, nuc_type, object=obj_name, dbl_helix=False)
+    if chain != 'A':
+        cmd.alter(obj_name, f"chain='{chain}';segi='{chain}'")
+        cmd.rebuild()
+    return obj_name
+
+
+def test_attach_nuc_acid_extend_with_chain():
+    """attach_nuc_acid can extend a nucleotide that has a chain ID."""
+    from pymol import editor
+
+    obj = _build_single_nuc("atp", "RNA", "test_nuc1", chain="A")
+    initial_count = cmd.count_atoms(obj)
+
+    # Select O3' on chain A to extend
+    cmd.select("sele", f"{obj} & name O3' & chain A")
+    assert cmd.count_atoms("sele") == 1
+
+    editor.attach_nuc_acid("sele", "utp", "RNA", dbl_helix=False)
+    assert cmd.count_atoms(obj) > initial_count
+
+
+def test_attach_nuc_acid_extend_empty_chain():
+    """attach_nuc_acid should work when chain ID is empty (GH #502)."""
+    from pymol import editor
+
+    obj = _build_single_nuc("atp", "RNA", "test_nuc2", chain="")
+    initial_count = cmd.count_atoms(obj)
+
+    # Select O3' on empty chain to extend
+    cmd.select("sele", f"{obj} & name O3' & chain ''")
+    assert cmd.count_atoms("sele") == 1
+
+    editor.attach_nuc_acid("sele", "utp", "RNA", dbl_helix=False)
+    assert cmd.count_atoms(obj) > initial_count
