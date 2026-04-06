@@ -446,6 +446,20 @@ int AtomInfoKnownWaterResName(PyMOLGlobals * G, const char *resn);
 int AtomInfoKnownPolymerResName(const char *resn);
 int AtomInfoKnownProteinResName(const char *resn);
 int AtomInfoKnownNucleicResName(const char *resn);
+int AtomInfoKnownPNAResName(const char *resn);
+
+/**
+ * Check if an atom is a nucleic acid backbone trace atom.
+ * DNA/RNA: "P", PNA: "N4'" / "N4*"
+ */
+inline bool AtomInfoIsNucBackboneTrace(const char* name, int protons)
+{
+  using namespace std::string_view_literals;
+  auto sv = std::string_view(name);
+
+  return (protons == cAN_P && sv == "P"sv) ||
+         (protons == cAN_N && (sv == "N4'"sv || sv == "N4*"sv));
+}
 void AtomInfoGetPDB3LetHydroName(PyMOLGlobals * G, const char *resn, const char *iname, char *oname);
 
 #define cAIC_ct        0x0001

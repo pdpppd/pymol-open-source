@@ -12,10 +12,10 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -66,7 +66,7 @@ jobs:
       CONDA_ENV_NAME: "testing_env"
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Install Miniforge
       run: |
@@ -126,7 +126,7 @@ jobs:
       CONDA_ENV_NAME: "testing_env"
 
     steps:
-    - uses: actions/checkout@v4.0.0
+    - uses: actions/checkout@v6
 
     - name: Download Miniforge
       run: |

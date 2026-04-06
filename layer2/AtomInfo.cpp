@@ -561,6 +561,10 @@ int AtomInfoKnownPolymerResName(const char *resn)
 
 int AtomInfoKnownNucleicResName(const char *resn)
 {
+  if (AtomInfoKnownPNAResName(resn)) {
+    return true;
+  }
+
   if (resn[0] == 'D') {
     // Deoxy ribonucleotide
     ++resn;
@@ -578,6 +582,13 @@ int AtomInfoKnownNucleicResName(const char *resn)
   }
 
   return false;
+}
+
+int AtomInfoKnownPNAResName(const char *resn)
+{
+  static const std::unordered_set<std::string_view> pna_names = {
+      "APN", "CPN", "GPN", "TPN", "IPN"};
+  return pna_names.count(resn);
 }
 
 int AtomInfoKnownProteinResName(const char *resn)

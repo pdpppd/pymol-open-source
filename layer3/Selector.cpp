@@ -1128,7 +1128,8 @@ int SelectorClassifyAtoms(PyMOLGlobals * G, int sele, int preserve,
       mask = 0;
       if(!ai->hetatm && AtomInfoKnownProteinResName(LexStr(G, ai->resn)))
         mask = cAtomFlag_polymer | cAtomFlag_protein;
-      else if(!ai->hetatm && AtomInfoKnownNucleicResName(LexStr(G, ai->resn)))
+      else if((!ai->hetatm || AtomInfoKnownPNAResName(LexStr(G, ai->resn)))
+              && AtomInfoKnownNucleicResName(LexStr(G, ai->resn)))
         mask = cAtomFlag_polymer | cAtomFlag_nucleic;
       else if(AtomInfoKnownWaterResName(G, LexStr(G, ai->resn)))
         mask = cAtomFlag_solvent;
@@ -1321,6 +1322,7 @@ int SelectorClassifyAtoms(PyMOLGlobals * G, int sele, int preserve,
       }
 
       if((mask & cAtomFlag_polymer)) {
+        AtomInfoType *guide_atom_c3 = nullptr;
         ai0 = obj->AtomInfo + I->Table[a0].atom;
         for(aa = a0; !guide_atom && aa <= a1; aa++) {
           if(ai0->protons == cAN_C) {
@@ -1343,10 +1345,23 @@ int SelectorClassifyAtoms(PyMOLGlobals * G, int sele, int preserve,
                   break;
                 }
                 break;
+              case '3':
+                if((mask & cAtomFlag_nucleic) && !guide_atom_c3) {
+                  switch (name[2]) {      /* C3' as fallback guide for nucleic acids without C4' (PNA) */
+                  case '*':
+                  case '\'':
+                    guide_atom_c3 = ai0;
+                    break;
+                  }
+                }
+                break;
               }
             }
           }
           ai0++;
+        }
+        if (!guide_atom && guide_atom_c3) {
+          guide_atom = guide_atom_c3;
         }
       }
 

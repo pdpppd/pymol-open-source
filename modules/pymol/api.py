@@ -219,6 +219,7 @@ from .editing import \
       pbc_unwrap, \
       pbc_wrap, \
       protect,            \
+      protonate,          \
       push_undo,          \
       rebond,             \
       reference,          \
@@ -302,7 +303,8 @@ from .fitting import \
       intra_rms,         \
       intra_rms_cur,     \
       cealign,          \
-      pair_fit
+      pair_fit,          \
+      usalign
 
 #--------------------------------------------------------------------
 # ARE ALL OF THESE UNUSED AND/OR DEPRECATED (?)
