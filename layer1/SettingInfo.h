@@ -905,6 +905,7 @@ enum {
   REC_f( 795, salt_bridge_distance                        , global    , 5.0f ),
   REC_b( 796, use_tessellation_shaders                , global    , true ),
   REC_c( 797, cell_color                              , ostate    , "-1" ),
+  REC_i( 798, grid_label_size                          , global    , 14, 8, 36 ),
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

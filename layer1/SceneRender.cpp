@@ -18,6 +18,7 @@
 #include "ScenePicking.h"
 #include "SceneRay.h"
 #include "ShaderMgr.h"
+#include "Text.h"
 #include "Util.h"
 #include "main.h"
 #include "pymol/utility.h"
@@ -185,6 +186,107 @@ void SceneProjectionMatrix(PyMOLGlobals* G, float front, float back, float aspRa
     glLoadMatrixf(SceneGetProjectionMatrixPtr(G));
     glMatrixMode(GL_MODELVIEW);
   }
+#endif
+}
+
+/*========================================================================*/
+/* SceneRenderGridLabels: Renders slot number labels in the top-left corner
+   of each grid cell when grid_mode is active.
+ */
+static void SceneRenderGridLabels(PyMOLGlobals* G, CScene* I, GridInfo* grid)
+{
+#ifndef PURE_OPENGL_ES_2
+  if (!grid->active || grid->last_slot < 1)
+    return;
+
+  int label_size = SettingGetGlobal_i(G, cSetting_grid_label_size);
+  if (label_size <= 0)
+    return;
+
+  /*
+   * Pick a GLUT bitmap font based on the requested label size:
+   *   0 = 8x13, 1 = 9x15, 2 = Helvetica 10, 3 = Helvetica 12, 4 = Helvetica 18
+   */
+  int font_id;
+  int char_w, char_h;
+  if (label_size <= 10) {
+    font_id = 0; char_w = 8; char_h = 13;
+  } else if (label_size <= 13) {
+    font_id = 1; char_w = 9; char_h = 15;
+  } else if (label_size <= 16) {
+    font_id = 3; char_w = 7; char_h = 12;   /* Helvetica 12 */
+  } else {
+    font_id = 4; char_w = 10; char_h = 18;  /* Helvetica 18 */
+  }
+
+  char_w = DIP2PIXEL(char_w);
+  char_h = DIP2PIXEL(char_h);
+
+  /* save current matrices */
+  glMatrixMode(GL_PROJECTION);
+  glPushMatrix();
+  glMatrixMode(GL_MODELVIEW);
+  glPushMatrix();
+
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_LIGHTING);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+  for (int slot = 1; slot <= grid->last_slot; slot++) {
+    GridSetViewport(G, grid, slot);
+
+    int vw = grid->cur_viewport_size.width;
+    int vh = grid->cur_viewport_size.height;
+
+    /* set up orthographic projection matching the grid cell */
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, vw, 0, vh, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    /* build label string: slot number + object name */
+    char label[280];
+    const char* obj_name = ExecutiveGetObjectNameForSlot(G, slot);
+    if (obj_name) {
+      snprintf(label, sizeof(label), "%d: %s", slot, obj_name);
+    } else {
+      snprintf(label, sizeof(label), "%d", slot);
+    }
+
+    int padding = DIP2PIXEL(4);
+    int label_len = static_cast<int>(strlen(label));
+    int bg_width = label_len * char_w + padding * 2;
+    int bg_height = char_h + padding * 2;
+    int bg_x = 0;
+    int bg_y = vh - bg_height;
+
+    /* draw semi-transparent background */
+    glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
+    glBegin(GL_QUADS);
+    glVertex2i(bg_x, bg_y);
+    glVertex2i(bg_x + bg_width, bg_y);
+    glVertex2i(bg_x + bg_width, bg_y + bg_height);
+    glVertex2i(bg_x, bg_y + bg_height);
+    glEnd();
+
+    /* draw text using selected GLUT bitmap font */
+    TextSetColor3f(G, 1.0f, 1.0f, 1.0f);
+    TextSetPos2i(G, bg_x + padding, bg_y + padding);
+    TextRenderOpenGL(G, nullptr, font_id, label, 0.0f,
+        nullptr, false, 0, 1, nullptr);
+  }
+
+  /* restore viewport and matrices */
+  GridSetViewport(G, grid, -1);
+
+  glMatrixMode(GL_PROJECTION);
+  glPopMatrix();
+  glMatrixMode(GL_MODELVIEW);
+  glPopMatrix();
+
+  glEnable(GL_DEPTH_TEST);
 #endif
 }
 
@@ -534,6 +636,11 @@ void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo)
         glDisable(GL_DITHER);
       }
 #endif
+
+      /* render grid slot labels as 2D overlay */
+      if (I->grid.active && I->grid.mode == GridMode::ByObject) {
+        SceneRenderGridLabels(G, I, &I->grid);
+      }
     }
 
 #ifndef PURE_OPENGL_ES_2

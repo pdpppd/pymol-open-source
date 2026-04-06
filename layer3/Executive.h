@@ -550,6 +550,7 @@ void ExecutiveInvalidateSelectionIndicatorsCGO(PyMOLGlobals* G);
 void ExecutiveRenderSelections(
     PyMOLGlobals* G, int curState, int slot, GridInfo* grid);
 void ExecutiveHideSelections(PyMOLGlobals* G);
+const char* ExecutiveGetObjectNameForSlot(PyMOLGlobals* G, int slot);
 pymol::Result<> ExecutiveSetTitle(
     PyMOLGlobals* G, const char* name, int state, const char* text);
 const char* ExecutiveGetTitle(PyMOLGlobals* G, const char* name, int state);

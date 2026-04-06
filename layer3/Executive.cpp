@@ -1508,6 +1508,18 @@ static void ExecutiveUpdateGridSlots(PyMOLGlobals* G, int force)
   }
 }
 
+const char* ExecutiveGetObjectNameForSlot(PyMOLGlobals* G, int slot)
+{
+  CExecutive* I = G->Executive;
+  SpecRec* rec = nullptr;
+  while (ListIterate(I->Spec, rec, next)) {
+    if (rec->type == cExecObject && rec->obj->grid_slot == slot) {
+      return rec->obj->Name;
+    }
+  }
+  return nullptr;
+}
+
 void ExecutiveInvalidatePanelList(PyMOLGlobals* G)
 {
   CExecutive* I = G->Executive;
@@ -16415,6 +16427,23 @@ void CExecutive::draw(CGO* orthoCGO)
 
               TextSetColor(G, getNameColor(rec->obj, name_color_mode, but_color,
                                   TextColor));
+
+              /* grid slot indicator */
+              if (rec->type == cExecObject &&
+                  SettingGet<GridMode>(G, cSetting_grid_mode) ==
+                      GridMode::ByObject &&
+                  rec->obj->grid_slot > 0) {
+                float slotColor[3] = {0.9F, 0.9F, 0.4F};
+                TextSetColor(G, slotColor);
+                char slot_str[8];
+                snprintf(slot_str, sizeof(slot_str), "%d ", rec->obj->grid_slot);
+                for (char* sc = slot_str; *sc && nChar > 0; sc++) {
+                  TextDrawChar(G, *sc, orthoCGO);
+                  nChar--;
+                }
+                TextSetColor(G, getNameColor(rec->obj, name_color_mode,
+                    but_color, TextColor));
+              }
 
               /* object name */
               c = rec->name;

@@ -1,0 +1,6 @@
+chempy
+pmg_qt
+pmg_tk
+pymol
+pymol2
+web

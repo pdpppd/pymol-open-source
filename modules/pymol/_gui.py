@@ -864,6 +864,9 @@ class PyMOLDesktopGUI(object):
                 ]),
             ]),
             ('menu', 'Plugin', []),
+            ('menu', 'AI', [
+                ('command', 'AI Assistant...', self.open_ai_panel),
+            ]),
             ('menu', 'Help', [
                 ('command', 'PyMOL Home Page', lambda: webbrowser.open("http://www.pymol.org")),
                 ('command', 'PyMOL Product Page', lambda: webbrowser.open("https://www.schrodinger.com/platform/products/pymol/")),

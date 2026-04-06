@@ -106,6 +106,7 @@ class PyMOLQtGUI(QtWidgets.QMainWindow, pymol._gui.PyMOLDesktopGUI):
         self.builder = None
         self.shortcut_menu_filter_dialog = None
         self.scene_panel_dialog = None
+        self.ai_panel = None
 
         # setting index -> callable
         self.setting_callbacks = defaultdict(list)
@@ -895,6 +896,16 @@ PyMOL> color ye<TAB>    (will autocomplete "yellow")
             self.scene_panel_dialog = ScenePanel(self)
 
         self.scene_panel_dialog.show()
+
+    def open_ai_panel(self):
+        from pmg_qt.ai_panel import AIPanel
+
+        if self.ai_panel is None:
+            self.ai_panel = AIPanel(self)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.ai_panel)
+
+        self.ai_panel.show()
+        self.ai_panel.raise_()
 
     def show_about(self):
         msg = [
