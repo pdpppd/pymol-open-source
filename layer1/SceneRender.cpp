@@ -246,11 +246,21 @@ static void SceneRenderGridLabels(PyMOLGlobals* G, CScene* I, GridInfo* grid)
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
-    /* build label string: slot number + object name */
+    /* find the object whose original grid_slot maps to this rendered slot */
     char label[280];
-    const char* obj_name = ExecutiveGetObjectNameForSlot(G, slot);
+    const char* obj_name = nullptr;
+    int orig_slot = 0;
+    for (auto& obj : I->Obj) {
+      int gs = obj->grid_slot;
+      if (gs > 0 && gs < static_cast<int>(I->m_slots.size()) &&
+          I->m_slots[gs] == slot) {
+        obj_name = obj->Name;
+        orig_slot = gs;
+        break;
+      }
+    }
     if (obj_name) {
-      snprintf(label, sizeof(label), "%d: %s", slot, obj_name);
+      snprintf(label, sizeof(label), "%d: %s", orig_slot, obj_name);
     } else {
       snprintf(label, sizeof(label), "%d", slot);
     }

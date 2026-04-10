@@ -1,6 +1,5 @@
 AUTHORS
 LICENSE
-README
 README.md
 pyproject.toml
 setup.py
@@ -220,6 +219,7 @@ layer2/RepWireBond.cpp
 layer2/Sculpt.cpp
 layer2/SculptCache.cpp
 layer2/SideChainHelper.cpp
+layer2/USalign.cpp
 layer2/VFont.cpp
 layer3/AtomIterators.cpp
 layer3/CifDataValueFormatter.cpp

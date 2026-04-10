@@ -4,3 +4,6 @@ generated
 build
 .vscode
 .DS_Store
+skills/structural-biology/SKILL.md
+skills/structural-biology.md
+*.cif
